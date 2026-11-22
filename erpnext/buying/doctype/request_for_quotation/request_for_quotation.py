@@ -351,7 +351,7 @@ class RequestforQuotation(BuyingController):
 		if fixed_procurement_email:
 			sender = frappe.db.get_value("Email Account", fixed_procurement_email, "email_id")
 		else:
-			sender = frappe.session.user not in STANDARD_USERS and get_email_address() or None
+			sender = (frappe.session.user not in STANDARD_USERS and get_email_address()) or None
 
 		message_template = self.mfs_html if self.use_html else self.message_for_supplier
 		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-ssti

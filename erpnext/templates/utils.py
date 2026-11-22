@@ -35,7 +35,7 @@ def send_message(sender: str, message: str, subject: str = "Website Query"):
 	# a guest's address is unverified, so only a signed-in sender is matched to a customer
 	customer = (
 		get_customer_from_contact_email(sender)
-		if frappe.session.user != "Guest" and (get_email_address() or "").lower() == sender.lower()
+		if frappe.session.user != "Guest" and get_email_address() == sender.lower()
 		else None
 	)
 

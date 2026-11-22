@@ -708,7 +708,7 @@ def create_user(employee: str, email: str | None = None, create_user_permission:
 		frappe.throw(_("Email is required to create a user"))
 
 	email = validate_email_address(email, True)
-	if get_user_by_email(email, include_standard_users=True):
+	if get_user_by_email(email):
 		frappe.throw(
 			_("User {0} already exists. Link the existing user to the Employee instead.").format(
 				frappe.bold(email)
@@ -880,7 +880,7 @@ def _get_contact_details(employee: str) -> dict:
 		contact_data.get("prefered_email")
 		or contact_data.get("company_email")
 		or contact_data.get("personal_email")
-		or contact_data.get("user_id")
+		or (contact_data.user_id and get_email_address(contact_data.user_id))
 	)
 
 	return {

@@ -83,9 +83,7 @@ class Issue(Document):
 		if is_website_user() or frappe.flags.in_web_form:
 			self.restore_staff_only_fields()
 
-		if frappe.flags.in_web_form and self.is_new():
-			self.raised_by = get_email_address()
-		elif not self.raised_by:
+		if not self.raised_by or (frappe.flags.in_web_form and self.is_new()):
 			self.raised_by = get_email_address()
 
 		self.set_lead_contact(self.raised_by)

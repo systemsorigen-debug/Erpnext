@@ -389,7 +389,7 @@ def link_portal_users_to_contacts(doc):
 		if portal_users == previous_users:
 			return
 
-	emails = [email.lower() for email in get_email_addresses(portal_users)]
+	emails = list(get_email_addresses(portal_users))
 	portal_users = list(portal_users)
 
 	contact = frappe.qb.DocType("Contact")

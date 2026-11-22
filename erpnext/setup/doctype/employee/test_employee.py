@@ -813,6 +813,20 @@ class TestEmployee(ERPNextTestSuite):
 			with self.assertRaisesRegex(frappe.ValidationError, "Link the existing user"):
 				create_user(employee.name, user.email)
 
+	def test_contact_details_fall_back_to_the_users_email(self):
+		from frappe.core.doctype.user.test_user import test_user
+
+		from erpnext.setup.doctype.employee.employee import _get_contact_details
+
+		with test_user(roles=["Employee"], generated_id=True) as user:
+			employee = new_employee(user.email)
+			employee.user_id = None
+			employee.insert()
+			# linking through on_update re-saves the user, which a generated-ID user can't survive
+			employee.db_set("user_id", user.name)
+
+			self.assertEqual(_get_contact_details(employee.name)["contact_email"], user.email)
+
 
 def new_employee(user_id: str):
 	return frappe.get_doc(

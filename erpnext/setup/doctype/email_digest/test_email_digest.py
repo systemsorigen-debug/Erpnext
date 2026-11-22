@@ -11,8 +11,6 @@ from erpnext.tests.utils import ERPNextTestSuite
 
 class TestEmailDigest(ERPNextTestSuite):
 	def test_recipient_must_be_enabled_system_user_on_save(self):
-		from frappe.core.doctype.user.test_user import test_user
-
 		website = make_digest_test_user("digest-website@example.com")
 		disabled = make_digest_test_user("digest-disabled@example.com", system_user=True)
 		disabled.enabled = 0
@@ -35,8 +33,6 @@ class TestEmailDigest(ERPNextTestSuite):
 	def test_send_skips_recipients_who_are_no_longer_eligible(self):
 		from unittest.mock import patch
 
-		from frappe.core.doctype.user.test_user import test_user
-
 		system_user = make_digest_test_user("digest-system@example.com", system_user=True)
 		disabled = make_digest_test_user("digest-disabled-send@example.com", system_user=True)
 		converted = make_digest_test_user("digest-converted@example.com", system_user=True)
@@ -56,8 +52,6 @@ class TestEmailDigest(ERPNextTestSuite):
 	def test_company_totals_are_not_sent_without_transaction_access(self):
 		from unittest.mock import patch
 
-		from frappe.core.doctype.user.test_user import test_user
-
 		user = make_digest_test_user("digest-company-totals@example.com", system_user=True)
 		self.assertFalse(frappe.has_permission("Purchase Order", "read", user=user.name))
 		order = create_purchase_order(transaction_date=add_days(today(), -1), do_not_save=True)
@@ -72,8 +66,6 @@ class TestEmailDigest(ERPNextTestSuite):
 		self.assertEqual(messages, [])
 
 	def test_financial_cards_require_company_and_record_access(self):
-		from frappe.core.doctype.user.test_user import test_user
-
 		user = make_digest_test_user("digest-financial-access@example.com", system_user=True)
 		user.add_roles("Purchase Manager", "Accounts Manager")
 		order = create_purchase_order(do_not_save=True)
@@ -119,8 +111,6 @@ class TestEmailDigest(ERPNextTestSuite):
 
 	def test_send_isolates_private_calendar_events(self):
 		from unittest.mock import patch
-
-		from frappe.core.doctype.user.test_user import test_user
 
 		users = [
 			make_digest_test_user(f"digest-event-{i}@example.com", system_user=True).name for i in range(2)
@@ -390,8 +380,6 @@ class TestEmailDigest(ERPNextTestSuite):
 
 	def check_recipient_failure(self, failure):
 		from unittest.mock import patch
-
-		from frappe.core.doctype.user.test_user import test_user
 
 		from erpnext.setup.doctype.email_digest.email_digest import EmailDigest, send
 
