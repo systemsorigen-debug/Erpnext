@@ -16,6 +16,7 @@ from erpnext.controllers.sales_and_purchase_return import (
 	validate_return,
 )
 from erpnext.controllers.subcontracting_controller import SubcontractingController
+from erpnext.manufacturing.doctype.bom.services.operations_cost import get_subcontracted_work_order_costs
 from erpnext.setup.doctype.brand.brand import get_brand_defaults
 from erpnext.setup.doctype.item_group.item_group import get_item_group_defaults
 from erpnext.stock.doctype.inventory_dimension.inventory_dimension import get_inventory_dimensions
@@ -823,8 +824,52 @@ class SubcontractingReceipt(SubcontractingController):
 		if self.is_return and self.return_against:
 			self.set_additional_costs_for_return()
 		else:
+			self.set_work_order_costs()
 			self.set_additional_costs_base_amount()
 			self.calculate_additional_costs()
+
+	def set_work_order_costs(self):
+		"""Book the costs of a Work Order on the finished goods of its subcontracted final operation."""
+		# the rows are rebuilt on every save, so keep the account a user picked
+		accounts = {
+			(row.work_order, row.item_row, cint(row.has_corrective_cost)): row.expense_account
+			for row in self.get("additional_costs")
+			if row.work_order and row.expense_account
+		}
+		self.set("additional_costs", [row for row in self.get("additional_costs") if not row.work_order])
+		for work_order_name, qty_by_item_row in self.get_final_operation_qty().items():
+			work_order = frappe.get_doc("Work Order", work_order_name)
+			for row in get_subcontracted_work_order_costs(work_order, qty_by_item_row):
+				key = (row["work_order"], row["item_row"], cint(row.get("has_corrective_cost")))
+				row["expense_account"] = accounts.get(key) or row["expense_account"]
+				self.append("additional_costs", row)
+
+	def get_final_operation_qty(self) -> dict[str, dict[str, float]]:
+		"""Accepted and process loss qty of each item row, by the Work Order whose final operation its job card is."""
+		rows = [
+			row
+			for row in self.items
+			if row.job_card and row.name and flt(row.qty) + flt(row.process_loss_qty) > 0
+		]
+		if not rows:
+			return {}
+
+		job_cards = frappe.get_all(
+			"Job Card",
+			filters={"name": ("in", list({row.job_card for row in rows}))},
+			fields=["name", "work_order", "finished_good", "production_item"],
+		)
+		work_orders = {
+			job_card.name: job_card.work_order
+			for job_card in job_cards
+			if job_card.work_order and job_card.finished_good == job_card.production_item
+		}
+
+		qty = defaultdict(dict)
+		for row in rows:
+			if work_order := work_orders.get(row.job_card):
+				qty[work_order][row.name] = flt(row.qty) + flt(row.process_loss_qty)
+		return qty
 
 	def set_additional_costs_for_return(self):
 		"""Take back the original receipt's additional costs allocated to the accepted qty returned."""
@@ -882,6 +927,9 @@ class SubcontractingReceipt(SubcontractingController):
 					"account_currency": row.account_currency,
 					"exchange_rate": row.exchange_rate,
 					"description": row.description,
+					"has_corrective_cost": row.has_corrective_cost,
+					"work_order": row.work_order,
+					"item_row": row.item_row,
 					"amount": flt(row.amount * row_ratio, row.precision("amount")),
 					"base_amount": flt(row.base_amount * row_ratio, row.precision("base_amount")),
 				},
