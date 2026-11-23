@@ -999,6 +999,47 @@ class TestSubcontractingOrder(ERPNextTestSuite):
 				consumed,
 			)
 
+	def test_transfer_can_be_cancelled_while_another_row_supplies_what_was_consumed(self):
+		"""5 each are sent for FG A and FG B, and a receipt of FG C, sent nothing, consumes 5."""
+		set_backflush_based_on("BOM")
+		rm_item = make_item("Subcontracted RM Item Cancel For Other FG", {"is_stock_item": 1}).name
+		service_items = []
+		for code, service_no in zip("ABC", (2, 3, 4), strict=True):
+			fg_item = make_item(
+				f"Subcontracted FG Item Cancel For Other FG {code}",
+				{"is_stock_item": 1, "is_sub_contracted_item": 1},
+			).name
+			make_bom(item=fg_item, raw_materials=[rm_item], rate=100, currency="INR")
+			service_items.append(
+				{
+					"warehouse": "_Test Warehouse - _TC",
+					"item_code": f"Subcontracted Service Item {service_no}",
+					"qty": 5,
+					"rate": 100,
+					"fg_item": fg_item,
+					"fg_item_qty": 5,
+				}
+			)
+
+		sco = get_subcontracting_order(service_items=service_items)
+		make_stock_entry(
+			item_code=rm_item, target=sco.supplied_items[0].reserve_warehouse, qty=10, basic_rate=100
+		)
+		transfers = [make_supplied_item_transfer(sco, row) for row in sco.supplied_items[:2]]
+		for transfer in transfers:
+			transfer.submit()
+
+		receipt = make_subcontracting_receipt(sco.name)
+		for item in receipt.items[:2]:
+			receipt.remove(item)
+		receipt.submit()
+
+		transfers[0].cancel()
+		self.assertEqual(
+			[frappe.db.get_value(row.doctype, row.name, "consumed_qty") for row in sco.supplied_items],
+			[0, 5, 0],
+		)
+
 	def test_close_subcontracting_order_releases_reserved_qty(self):
 		# RM in stock at the reserve warehouse for transfer
 		make_stock_entry(target="_Test Warehouse - _TC", item_code="_Test Item", qty=10, basic_rate=100)
