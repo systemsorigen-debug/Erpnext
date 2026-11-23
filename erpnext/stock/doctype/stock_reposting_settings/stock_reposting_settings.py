@@ -14,6 +14,8 @@ from frappe.utils import (
 )
 from frappe.utils.user import get_users_with_role
 
+from erpnext.accounts.default_accounts import INVENTORY, get_default_account
+
 
 class StockRepostingSettings(Document):
 	# begin: auto-generated types
@@ -273,8 +275,8 @@ def get_voucher_warehouse_accounts(voucher_no, company):
 
 	rows = []
 	for warehouse in {w for w in warehouses if w}:
-		account = frappe.get_cached_value("Warehouse", warehouse, "account") or frappe.get_cached_value(
-			"Company", company, "default_inventory_account"
+		account = frappe.get_cached_value("Warehouse", warehouse, "account") or get_default_account(
+			company, INVENTORY
 		)
 		account_type = frappe.get_cached_value("Account", account, "account_type") if account else None
 		rows.append((warehouse, account, account_type))
