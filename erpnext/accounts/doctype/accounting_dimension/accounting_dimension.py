@@ -286,8 +286,60 @@ def get_dimension_with_children(doctype, dimensions):
 	return all_dimensions
 
 
+<<<<<<< HEAD
 @frappe.whitelist()
 def get_dimensions(with_cost_center_and_project=False):
+=======
+def get_dimension_filter_values(values, dimension_doctype=None):
+	if isinstance(values, str):
+		try:
+			parsed_values = json.loads(values)
+		except json.JSONDecodeError:
+			pass
+		else:
+			if isinstance(parsed_values, list):
+				values = parsed_values
+
+	if values is None:
+		values = []
+	elif not isinstance(values, list | tuple):
+		values = [values]
+
+	include_blank = BLANK_ACCOUNTING_DIMENSION in values
+	values = [value for value in values if value != BLANK_ACCOUNTING_DIMENSION]
+
+	if values and dimension_doctype and frappe.get_cached_value("DocType", dimension_doctype, "is_tree"):
+		values = get_dimension_with_children(dimension_doctype, values)
+
+	return values, include_blank
+
+
+def get_dimension_filter_condition(field, values, dimension_doctype=None):
+	values, include_blank = get_dimension_filter_values(values, dimension_doctype)
+	condition = field.isin(values) if values else None
+
+	if include_blank:
+		blank_condition = field.isnull() | (field == "")
+		condition = condition | blank_condition if condition else blank_condition
+
+	return condition
+
+
+def get_dimension_filter_sql_condition(fieldname, values, dimension_doctype=None):
+	values, include_blank = get_dimension_filter_values(values, dimension_doctype)
+	parts = []
+
+	if values:
+		parts.append(f"{fieldname} IN ({', '.join(['?'] * len(values))})")
+
+	if include_blank:
+		parts.append(f"({fieldname} IS NULL OR {fieldname} = '')")
+
+	return f"({' OR '.join(parts)})" if parts else None, values
+
+
+def get_dimensions(with_cost_center_and_project: str | bool = False):
+>>>>>>> 5d5ba21 (fix(accounts): return accounting dimension defaults only for companies the user can see)
 	c = frappe.qb.DocType("Accounting Dimension Detail")
 	p = frappe.qb.DocType("Accounting Dimension")
 	dimension_filters = (
@@ -321,6 +373,20 @@ def get_dimensions(with_cost_center_and_project=False):
 		default_dimensions_map[dimension.company][dimension.fieldname] = dimension.default_dimension
 
 	return dimension_filters, default_dimensions_map
+
+
+@frappe.whitelist()
+def get_dimensions_for_user(with_cost_center_and_project: str | bool = False):
+	"""`get_dimensions` for client scripts, with defaults only for the companies the user can see.
+
+	`override_whitelisted_methods` sends calls to `get_dimensions` here.
+	"""
+	# raises PermissionError for users without access to Company, such as Website Users
+	companies = set(frappe.get_list("Company", pluck="name"))
+	dimension_filters, default_dimensions_map = get_dimensions(with_cost_center_and_project)
+	return dimension_filters, {
+		company: defaults for company, defaults in default_dimensions_map.items() if company in companies
+	}
 
 
 def create_accounting_dimensions_for_doctype(doctype):
