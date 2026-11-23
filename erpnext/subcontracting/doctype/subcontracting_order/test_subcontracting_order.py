@@ -1032,6 +1032,30 @@ class TestSubcontractingOrder(ERPNextTestSuite):
 
 		self.assertRaisesRegex(frappe.ValidationError, "already consumed", transfers[0].cancel)
 
+	def test_transfer_cannot_be_cancelled_when_a_return_leaves_the_order_short(self):
+		"""5 each are sent for FG A and FG B, 4 are returned from FG A's row, and a receipt of FG A consumes 5."""
+		set_backflush_based_on("BOM")
+		sco, rm_item = make_order_of_three_finished_goods_sharing_a_raw_material("Cancel After Return")
+		transfers = [make_supplied_item_transfer(sco, row) for row in sco.supplied_items[:2]]
+		for transfer in transfers:
+			transfer.submit()
+
+		frappe.flags.args = {"rm_details": [sco.supplied_items[0].name]}
+		returned = get_materials_from_supplier(sco.name)
+		frappe.flags.args = None
+		returned.items = [item for item in returned.items if item.sco_rm_detail == sco.supplied_items[0].name]
+		returned.items[0].qty = 4
+		returned.submit()
+		# stock of other orders at the same supplier
+		make_stock_entry(item_code=rm_item, target=sco.supplier_warehouse, qty=5, basic_rate=100)
+
+		receipt = make_subcontracting_receipt(sco.name)
+		for item in receipt.items[1:]:
+			receipt.remove(item)
+		receipt.submit()
+
+		self.assertRaisesRegex(frappe.ValidationError, "already consumed", transfers[0].cancel)
+
 	def test_transfer_of_a_consumed_alternative_cannot_be_cancelled(self):
 		"""FG A is sent an alternative, FG B the raw material, and a receipt of FG A consumes the alternative."""
 		set_backflush_based_on("BOM")
