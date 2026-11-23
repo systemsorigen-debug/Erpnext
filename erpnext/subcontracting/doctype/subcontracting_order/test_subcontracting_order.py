@@ -1056,6 +1056,34 @@ class TestSubcontractingOrder(ERPNextTestSuite):
 
 		self.assertRaisesRegex(frappe.ValidationError, "already consumed", transfers[0].cancel)
 
+	def test_transfer_of_a_material_not_on_the_order_can_be_cancelled_while_another_supplies_it(self):
+		"""An item not in FG A's BOM is sent twice for it, and a receipt of 1 FG A consumes less than one transfer."""
+		set_backflush_based_on("Material Transferred for Subcontract")
+		sco, _rm_item = make_order_of_three_finished_goods_sharing_a_raw_material("Cancel Extra")
+		extra_item = make_item("Subcontracted Extra RM Item For Cancel", {"is_stock_item": 1}).name
+		warehouse = sco.supplied_items[0].reserve_warehouse
+		make_stock_entry(item_code=extra_item, target=warehouse, qty=10, basic_rate=100)
+		rm_item = {
+			"item_code": sco.items[0].item_code,
+			"rm_item_code": extra_item,
+			"qty": 5,
+			"warehouse": warehouse,
+			"stock_uom": "Nos",
+		}
+		transfers = [frappe.get_doc(make_rm_stock_entry(sco.name, [rm_item])) for _ in range(2)]
+		for transfer in transfers:
+			transfer.submit()
+
+		receipt = make_subcontracting_receipt(sco.name)
+		for item in receipt.items[1:]:
+			receipt.remove(item)
+		receipt.items[0].qty = 1
+		receipt.save()
+		receipt.submit()
+
+		transfers[0].cancel()
+		self.assertEqual(transfers[0].docstatus, 2)
+
 	def test_transfer_of_a_consumed_alternative_cannot_be_cancelled(self):
 		"""FG A is sent an alternative, FG B the raw material, and a receipt of FG A consumes the alternative."""
 		set_backflush_based_on("BOM")
