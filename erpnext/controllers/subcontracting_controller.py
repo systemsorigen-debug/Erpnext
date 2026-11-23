@@ -1635,6 +1635,7 @@ class SubcontractingController(StockController):
 		)
 		items_sent = self.get_items_sent_on_order_rows()
 		consumed_beyond_sent = get_consumed_qty_beyond_sent(rows, items_sent, itemwise_consumed_qty)
+		unsupplied_qty = get_consumed_qty_beyond_net_supply(rows, items_sent, itemwise_consumed_qty)
 		precision = frappe.get_precision(self.subcontract_data.order_supplied_items_field, "consumed_qty")
 
 		for row in rows:
@@ -1660,7 +1661,7 @@ class SubcontractingController(StockController):
 				flt(consumed_qty, precision),
 			)
 
-		return consumed_beyond_sent
+		return unsupplied_qty
 
 	def get_items_sent_on_order_rows(self):
 		"""Net qty of each item sent to the subcontractor, by the order's supplied row it was sent on."""
@@ -1688,7 +1689,7 @@ class SubcontractingController(StockController):
 		return items_sent
 
 	def set_consumed_qty_in_subcontract_order(self):
-		"""Update consumed qty back in the subcontract order. Returns the consumption, by item and order, no order row supplies."""
+		"""Update consumed qty back in the subcontract order. Returns the consumption, by item and order, beyond the order's net supply."""
 		if self.doctype in ["Subcontracting Order", "Subcontracting Receipt"]:
 			self.__get_subcontract_orders()
 			if self.doctype == "Subcontracting Order":
@@ -1946,6 +1947,19 @@ def get_consumed_qty_beyond_sent(rows, items_sent, itemwise_consumed_qty):
 		consumed_qty[(item_code, order)] += max(qty - sent_for[(item_code, finished_good, order)], 0)
 
 	return consumed_qty
+
+
+def get_consumed_qty_beyond_net_supply(rows, items_sent, itemwise_consumed_qty):
+	"""Consumption, by item and order, beyond the order's net qty sent of it, returns included."""
+	unsupplied_qty = defaultdict(float)
+	for (item_code, _finished_good, order), qty in itemwise_consumed_qty.items():
+		unsupplied_qty[(item_code, order)] += qty
+
+	for row in rows:
+		for item_code, sent_qty in items_sent.get(row.name, {}).items():
+			unsupplied_qty[(item_code, row.parent)] -= sent_qty
+
+	return unsupplied_qty
 
 
 def get_item_details(items):
