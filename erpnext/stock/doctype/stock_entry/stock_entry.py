@@ -731,45 +731,42 @@ class StockEntry(StockController, SubcontractingInwardController):
 		"""Set rate for outgoing, secondary and finished items."""
 		outgoing_items_cost = self.set_rate_for_outgoing_items(reset_outgoing_rate, raise_error_if_no_rate)
 		raise_error_if_no_rate = raise_error_if_no_rate and not self.is_new()
-		has_consumption_basis = self.has_consumption_basis()
+		has_running_total_share = self.has_running_total_share()
+		# without raw material rows, earlier entries consumed this entry's whole-number share
+		has_consumption_basis = has_running_total_share or self.has_consumption_basis()
 
 		bom_cost_allocation_per = self.get_finished_good_cost_allocation_per() if self.bom_no else None
 
 		secondary_items_cost_basis = self.get_secondary_items_cost_basis(outgoing_items_cost)
 
 		zero_valuation_items = []
-		# Own-cost rows first, then sub-assembly percentage rows, inner BOMs first: their value is
-		# deducted from the basis the outer BOMs' rows and the finished good split.
+		rate_args = (
+			outgoing_items_cost,
+			raise_error_if_no_rate,
+			zero_valuation_items,
+			bom_cost_allocation_per,
+			has_consumption_basis,
+			secondary_items_cost_basis,
+		)
+		costed_out_items = [d for d in self.get("items") if is_costed_out_of_finished_item(d)]
+		for d in costed_out_items:
+			self._set_incoming_item_rate(d, *rate_args)
+
+		if has_running_total_share:
+			self.cap_costed_out_items(costed_out_items, outgoing_items_cost)
+
+		# Sub-assembly percentage rows next, inner BOMs first: their value is deducted from the
+		# basis the outer BOMs' rows and the finished good split.
 		finished_items_last = sorted(
-			self.get("items"),
+			(d for d in self.get("items") if not is_costed_out_of_finished_item(d)),
 			key=lambda row: (
 				cint(row.is_finished_item),
 				cint(not self.is_costed_out(row)),
-				cint(not is_costed_out_of_finished_item(row)),
 				self.count_secondary_items_under(row),
 			),
 		)
 		for d in finished_items_last:
-			if d.s_warehouse or d.set_basic_rate_manually:
-				if d.set_basic_rate_manually:
-					d.basic_amount = flt(flt(d.transfer_qty) * flt(d.basic_rate), d.precision("basic_amount"))
-				continue
-
-			# Zero-qty secondary items carry no inventory value; skip rate calculation
-			if d.secondary_item_type and flt(d.transfer_qty) == 0:
-				d.basic_rate = 0.0
-				d.basic_amount = 0.0
-				continue
-
-			self._set_incoming_item_rate(
-				d,
-				outgoing_items_cost,
-				raise_error_if_no_rate,
-				zero_valuation_items,
-				bom_cost_allocation_per,
-				has_consumption_basis,
-				secondary_items_cost_basis,
-			)
+			self._set_incoming_item_rate(d, *rate_args)
 
 		if zero_valuation_items:
 			self._notify_zero_valuation_rate(zero_valuation_items)
@@ -809,6 +806,33 @@ class StockEntry(StockController, SubcontractingInwardController):
 
 		return self.is_rm_cost_from_consumption_entries()
 
+	def has_running_total_share(self) -> bool:
+		"""A Manufacture whose whole-number raw materials follow the Work Order's running total."""
+		return bool(
+			self.purpose == "Manufacture"
+			and self.work_order
+			and ManufactureStockEntry(self).consumes_running_total_share
+		)
+
+	def cap_costed_out_items(self, rows, consumed_cost):
+		"""Scale Valuation Rate and Manual secondary rows down to the consumed cost, as an earlier
+		entry may have consumed the whole unit they come from. The largest row takes the rounding."""
+		rows = [d for d in rows if flt(d.basic_amount)]
+		costed_out_cost = sum(flt(d.basic_amount) for d in rows)
+		if costed_out_cost <= consumed_cost:
+			return
+
+		largest_row = max(rows, key=lambda d: flt(d.basic_amount))
+		for d in rows:
+			d.basic_rate = flt(d.basic_rate) * consumed_cost / costed_out_cost
+			d.basic_amount = flt(flt(d.transfer_qty) * d.basic_rate, d.precision("basic_amount"))
+
+		largest_row.basic_amount = flt(
+			consumed_cost - sum(flt(d.basic_amount) for d in rows if d is not largest_row),
+			largest_row.precision("basic_amount"),
+		)
+		largest_row.basic_rate = largest_row.basic_amount / flt(largest_row.transfer_qty)
+
 	def is_rm_cost_from_consumption_entries(self) -> bool:
 		"""Whether the consumption entries replace the raw materials of this entry."""
 		settings = frappe.get_single("Manufacturing Settings")
@@ -841,6 +865,17 @@ class StockEntry(StockController, SubcontractingInwardController):
 		has_consumption_basis=False,
 		secondary_items_cost_basis=0,
 	):
+		if d.s_warehouse or d.set_basic_rate_manually:
+			if d.set_basic_rate_manually:
+				d.basic_amount = flt(flt(d.transfer_qty) * flt(d.basic_rate), d.precision("basic_amount"))
+			return
+
+		# Zero-qty secondary items carry no inventory value; skip rate calculation
+		if d.secondary_item_type and flt(d.transfer_qty) == 0:
+			d.basic_rate = 0.0
+			d.basic_amount = 0.0
+			return
+
 		has_derived_rate = False
 
 		# a zero valued finished good takes no share of the cost, even before it has a rate
@@ -1136,7 +1171,8 @@ class StockEntry(StockController, SubcontractingInwardController):
 			)
 
 		cost_left = outgoing_items_cost - scrap_items_cost - manual_cost
-		if self.flags.via_repost:
+		# capped secondary items can leave a float residue just below zero
+		if self.flags.via_repost or flt(cost_left, self.precision("basic_amount", "items")) == 0:
 			cost_left = max(cost_left, 0)
 
 		return flt(cost_left / finished_item_qty) if finished_item_qty else 0.0
