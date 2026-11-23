@@ -1635,6 +1635,7 @@ class SubcontractingController(StockController):
 		)
 		items_sent = self.get_items_sent_on_order_rows()
 		consumed_beyond_sent = get_consumed_qty_beyond_sent(rows, items_sent, itemwise_consumed_qty)
+		unsupplied_qty = get_consumed_qty_beyond_net_supply(self.get_net_qty_sent(), itemwise_consumed_qty)
 		precision = frappe.get_precision(self.subcontract_data.order_supplied_items_field, "consumed_qty")
 
 		for row in rows:
@@ -1659,6 +1660,8 @@ class SubcontractingController(StockController):
 				"consumed_qty",
 				flt(consumed_qty, precision),
 			)
+
+		return unsupplied_qty
 
 	def get_items_sent_on_order_rows(self):
 		"""Net qty of each item sent to the subcontractor, by the order's supplied row it was sent on."""
@@ -1685,10 +1688,37 @@ class SubcontractingController(StockController):
 
 		return items_sent
 
+	def get_net_qty_sent(self):
+		"""Net qty of each item sent to the subcontractor, by item and order, on an order row or not."""
+		se = frappe.qb.DocType("Stock Entry")
+		se_detail = frappe.qb.DocType("Stock Entry Detail")
+		order = se[self.subcontract_data.order_field]
+		qty = Case().when(se.is_return == 1, -se_detail.transfer_qty).else_(se_detail.transfer_qty)
+		rows = (
+			frappe.qb.from_(se)
+			.inner_join(se_detail)
+			.on(se.name == se_detail.parent)
+			.select(se_detail.item_code, order, Sum(qty))
+			.where(
+				(se.docstatus == 1)
+				& order.isin(self.subcontract_orders)
+				& (
+					(se.purpose == "Send to Subcontractor")
+					| ((se.purpose == "Material Transfer") & (se.is_return == 1))
+				)
+			)
+			.groupby(se_detail.item_code, order)
+		).run()
+
+		return {(item_code, order_name): sent_qty for item_code, order_name, sent_qty in rows}
+
 	def set_consumed_qty_in_subcontract_order(self):
-		# Update consumed qty back in the subcontract order
+		"""Update consumed qty back in the subcontract order. Returns the consumption, by item and order, beyond the order's net supply."""
 		if self.doctype in ["Subcontracting Order", "Subcontracting Receipt"]:
 			self.__get_subcontract_orders()
+			if self.doctype == "Subcontracting Order":
+				self.subcontract_orders = [self.name]
+
 			itemwise_consumed_qty = defaultdict(float)
 
 			consumed_items, receipt_items = self.__update_consumed_materials(
@@ -1699,7 +1729,7 @@ class SubcontractingController(StockController):
 				key = (row.rm_item_code, row.main_item_code, receipt_items.get(row.reference_name))
 				itemwise_consumed_qty[key] += row.consumed_qty
 
-			self.__update_consumed_qty_in_subcontract_order(itemwise_consumed_qty)
+			return self.__update_consumed_qty_in_subcontract_order(itemwise_consumed_qty)
 
 	def update_ordered_and_reserved_qty(self):
 		sco_map = {}
@@ -1941,6 +1971,18 @@ def get_consumed_qty_beyond_sent(rows, items_sent, itemwise_consumed_qty):
 		consumed_qty[(item_code, order)] += max(qty - sent_for[(item_code, finished_good, order)], 0)
 
 	return consumed_qty
+
+
+def get_consumed_qty_beyond_net_supply(net_qty_sent, itemwise_consumed_qty):
+	"""Consumption, by item and order, beyond the order's net qty sent of it."""
+	unsupplied_qty = defaultdict(float)
+	for (item_code, _finished_good, order), qty in itemwise_consumed_qty.items():
+		unsupplied_qty[(item_code, order)] += qty
+
+	for key, sent_qty in net_qty_sent.items():
+		unsupplied_qty[key] -= sent_qty
+
+	return unsupplied_qty
 
 
 def get_item_details(items):

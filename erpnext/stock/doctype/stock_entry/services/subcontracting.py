@@ -205,30 +205,25 @@ class SendToSubcontractorStockEntry(BaseStockEntry):
 
 	def on_cancel(self):
 		self.update_subcontract_order_supplied_items()
-		self.validate_consumed_qty_is_still_supplied()
+		self.update_consumed_qty_in_order()
 
-	def validate_consumed_qty_is_still_supplied(self):
-		"""Receipts of the order must not have consumed the material this cancelled entry supplied."""
-		rm_detail_field = self.doc.subcontract_data.rm_detail_field
-		order_rows = frappe.get_all(
-			self.doc.subcontract_data.order_supplied_items_field,
-			filters={"name": ["in", [row.get(rm_detail_field) for row in self.doc.items]]},
-			fields=["idx", "rm_item_code", "total_supplied_qty", "consumed_qty"],
-		)
+	def update_consumed_qty_in_order(self):
+		"""Count the order's consumption again on the rows that still supply it, and block a cancel that leaves some unsupplied."""
+		order = self.doc.get(self.doc.subcontract_data.order_field)
+		if not order:
+			return
+
+		unsupplied_qty = frappe.get_doc(
+			self.doc.subcontract_data.order_doctype, order
+		).set_consumed_qty_in_subcontract_order()
 		precision = frappe.get_precision(self.doc.subcontract_data.order_supplied_items_field, "consumed_qty")
-		for row in order_rows:
-			if flt(row.consumed_qty, precision) > flt(row.total_supplied_qty, precision):
+		for item_code in {row.item_code for row in self.doc.items}:
+			qty = flt(unsupplied_qty.get((item_code, order)), precision)
+			if qty > 0:
 				frappe.throw(
 					_(
-						"Cannot cancel: receipts of {0} {1} already consumed {2} of Item {3} (row {4}), more than the {5} it would still have supplied."
-					).format(
-						self.doc.subcontract_data.order_doctype,
-						self.doc.get(self.doc.subcontract_data.order_field),
-						row.consumed_qty,
-						row.rm_item_code,
-						row.idx,
-						row.total_supplied_qty,
-					)
+						"Cannot cancel: receipts of {0} {1} already consumed {2} more of Item {3} than it would still have supplied."
+					).format(self.doc.subcontract_data.order_doctype, order, qty, item_code)
 				)
 
 	def update_subcontract_order_supplied_items(self):
