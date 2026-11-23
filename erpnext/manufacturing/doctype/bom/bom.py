@@ -2506,7 +2506,8 @@ def get_exploded_good_qty(bom):
 
 
 def get_secondary_items_from_sub_assemblies(bom_no, company, qty, secondary_items=None):
-	if not secondary_items:
+	"""Secondary items of the sub-assembly BOMs at every level, for qty of the BOM's item."""
+	if secondary_items is None:
 		secondary_items = {}
 
 	bom_items = frappe.get_all(
@@ -2520,11 +2521,17 @@ def get_secondary_items_from_sub_assemblies(bom_no, company, qty, secondary_item
 		if not row.bom_no:
 			continue
 
-		qty = flt(row.qty) * flt(qty)
-		items = get_bom_items_as_dict(row.bom_no, company, qty=qty, fetch_exploded=0, fetch_secondary_items=1)
-		secondary_items.update(items)
+		row_qty = flt(row.qty) * flt(qty)
+		items = get_bom_items_as_dict(
+			row.bom_no, company, qty=row_qty, fetch_exploded=0, fetch_secondary_items=1
+		)
+		for key, item in items.items():
+			if key in secondary_items:
+				secondary_items[key].qty += flt(item.qty)
+			else:
+				secondary_items[key] = item
 
-		get_secondary_items_from_sub_assemblies(row.bom_no, company, qty, secondary_items)
+		get_secondary_items_from_sub_assemblies(row.bom_no, company, row_qty, secondary_items)
 
 	return secondary_items
 
