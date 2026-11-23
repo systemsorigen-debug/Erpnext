@@ -10,6 +10,16 @@ from pypika import functions as fn
 import erpnext
 import erpnext.controllers
 import erpnext.controllers.status_updater
+from erpnext.accounts.default_accounts import (
+	ASSET_RECEIVED_BUT_NOT_BILLED,
+	EXCHANGE_GAIN_LOSS,
+	INVENTORY,
+	PROVISIONAL,
+	STOCK_ADJUSTMENT,
+	STOCK_RECEIVED_BUT_NOT_BILLED,
+	get_default_account,
+	set_default_account,
+)
 from erpnext.accounts.doctype.account.test_account import get_inventory_account
 from erpnext.buying.doctype.supplier.test_supplier import create_supplier
 from erpnext.controllers.accounts_controller import InvalidQtyError
@@ -3163,7 +3173,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		pr.submit()
 
 		# Get exchnage gain and loss account
-		exchange_gain_loss_account = frappe.db.get_value("Company", pr.company, "exchange_gain_loss_account")
+		exchange_gain_loss_account = get_default_account(pr.company, EXCHANGE_GAIN_LOSS)
 
 		# fetching the latest GL Entry with exchange gain and loss account account
 		amount = frappe.db.get_value(
@@ -5849,7 +5859,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		)
 		company = frappe.get_doc("Company", "_Test Company")
 		company.enable_provisional_accounting_for_non_stock_items = 1
-		company.default_provisional_account = provisional_account
+		company.set_default_account(PROVISIONAL, provisional_account)
 		company.save()
 
 		# Step - 3: Create Non-Stock Item
@@ -6194,15 +6204,11 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 
 		old_perpetual_inventory = erpnext.is_perpetual_inventory_enabled("_Test Company")
 		frappe.local.enable_perpetual_inventory["_Test Company"] = 1
-		old_inventory_account = frappe.db.get_value("Company", "_Test Company", "default_inventory_account")
-		frappe.db.set_value(
-			"Company",
-			"_Test Company",
-			{
-				"stock_received_but_not_billed": "Stock Received But Not Billed - _TC",
-				"default_inventory_account": "Stock In Hand - _TC",
-			},
+		old_inventory_account = get_default_account("_Test Company", INVENTORY)
+		set_default_account(
+			"_Test Company", STOCK_RECEIVED_BUT_NOT_BILLED, "Stock Received But Not Billed - _TC"
 		)
+		set_default_account("_Test Company", INVENTORY, "Stock In Hand - _TC")
 
 		pr = make_purchase_receipt(qty=10, rate=1000, do_not_submit=1)
 		pr.append(
@@ -6237,7 +6243,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		)
 		self.assertCountEqual(expected_gle, gl_entries)
 		frappe.local.enable_perpetual_inventory["_Test Company"] = old_perpetual_inventory
-		frappe.db.set_value("Company", "_Test Company", "default_inventory_account", old_inventory_account)
+		set_default_account("_Test Company", INVENTORY, old_inventory_account)
 
 	def test_purchase_receipt_with_use_serial_batch_field_for_rejected_qty(self):
 		batch_item = make_item(
@@ -8167,11 +8173,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			rejected_warehouse=rej_warehouse,
 		)
 
-		stock_received_but_not_billed_account = frappe.get_value(
-			"Company",
-			company,
-			"stock_received_but_not_billed",
-		)
+		stock_received_but_not_billed_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 
 		rejected_item_cost = frappe.db.get_value(
 			"Stock Ledger Entry",
@@ -8232,11 +8234,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			rejected_warehouse=rej_warehouse,
 		)
 
-		stock_received_but_not_billed_account = frappe.get_value(
-			"Company",
-			company,
-			"stock_received_but_not_billed",
-		)
+		stock_received_but_not_billed_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 
 		rejected_item_cost = frappe.db.get_value(
 			"Stock Ledger Entry",
@@ -8274,7 +8272,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		company = "_Test Company with perpetual inventory"
 		rej_warehouse = create_warehouse("_Test Warehouse - Rejected Material", company=company)
 		stock_account = get_inventory_account(company, rej_warehouse)
-		accrual_account = frappe.get_cached_value("Company", company, "stock_received_but_not_billed")
+		accrual_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 
 		for currency, exchange_rate, uom, conversion_factor in (
 			("INR", 1, "Nos", 1),
@@ -8353,11 +8351,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			rejected_warehouse=rej_warehouse,
 		)
 
-		stock_received_but_not_billed_account = frappe.get_value(
-			"Company",
-			company,
-			"stock_received_but_not_billed",
-		)
+		stock_received_but_not_billed_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 
 		rejected_item_cost = frappe.db.get_value(
 			"Stock Ledger Entry",
@@ -8776,7 +8770,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		rejected_return = make_purchase_return_against_rejected_warehouse(pr.name)
 		rejected_return.submit()
 
-		srbnb_account = frappe.get_cached_value("Company", company, "stock_received_but_not_billed")
+		srbnb_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 		srbnb_debit = frappe.db.get_value(
 			"GL Entry",
 			{"voucher_no": rejected_return.name, "account": srbnb_account, "is_cancelled": 0},
@@ -9351,14 +9345,14 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		).insert()
 
 		stock_accounts = (
-			company.default_inventory_account,
-			company.stock_adjustment_account,
-			company.stock_received_but_not_billed,
+			company.get_default_account(INVENTORY),
+			company.get_default_account(STOCK_ADJUSTMENT),
+			company.get_default_account(STOCK_RECEIVED_BUT_NOT_BILLED),
 		)
 
-		company.update(
-			{"stock_in_hand_account": "", "stock_adjustment_account": "", "stock_received_but_not_billed": ""}
-		).save()
+		company.set_default_account(STOCK_ADJUSTMENT, "")
+		company.set_default_account(STOCK_RECEIVED_BUT_NOT_BILLED, "")
+		company.update({"stock_in_hand_account": ""}).save()
 
 		for account in stock_accounts:
 			frappe.db.delete("Account", account)
@@ -9367,7 +9361,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		asset_item = create_fixed_asset_item(
 			item_code="Test Fixed Asset Item for PR GL Test", asset_category=asset_category.name
 		)
-		arnb_account = frappe.db.get_value("Company", company.name, "asset_received_but_not_billed")
+		arnb_account = get_default_account(company.name, ASSET_RECEIVED_BUT_NOT_BILLED)
 
 		# Purchase Receipt should be able to create even without any stock accounts linked to company
 		pr = make_purchase_receipt(
@@ -9408,7 +9402,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		asset_item = create_fixed_asset_item(
 			item_code="Test Fixed Asset Item for PR GL Test", asset_category=asset_category.name
 		)
-		arnb_account = frappe.db.get_value("Company", company.name, "asset_received_but_not_billed")
+		arnb_account = get_default_account(company.name, ASSET_RECEIVED_BUT_NOT_BILLED)
 
 		pr = make_purchase_receipt(
 			item_code=asset_item.name,
@@ -9450,8 +9444,8 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		self.assertIn(asset_category.accounts[0].fixed_asset_account, gl_accounts)
 
 		# Stock Accounts should be used for Stock Items
-		self.assertIn(company.stock_received_but_not_billed, gl_accounts)
-		self.assertIn(company.default_inventory_account, gl_accounts)
+		self.assertIn(company.get_default_account(STOCK_RECEIVED_BUT_NOT_BILLED), gl_accounts)
+		self.assertIn(company.get_default_account(INVENTORY), gl_accounts)
 
 	@ERPNextTestSuite.change_settings(
 		"Buying Settings", {"set_landed_cost_based_on_purchase_invoice_rate": 1, "maintain_same_rate": 0}
@@ -9947,7 +9941,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			filters={"voucher_no": receipt.name, "is_cancelled": 0},
 			pluck="stock_value_difference",
 		)
-		srbnb_account = frappe.get_cached_value("Company", company, "stock_received_but_not_billed")
+		srbnb_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 		srbnb_credit = frappe.db.get_value(
 			"GL Entry",
 			{"voucher_no": receipt.name, "account": srbnb_account, "is_cancelled": 0},
@@ -9995,7 +9989,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			filters={"voucher_no": receipt.name, "is_cancelled": 0},
 			fields=["account", "debit", "credit"],
 		)
-		srbnb_account = frappe.get_cached_value("Company", company, "stock_received_but_not_billed")
+		srbnb_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 		credits = {d.account: d.credit for d in gl_entries if d.credit}
 
 		self.assertEqual(stock_value, 210)
@@ -10031,7 +10025,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			filters={"voucher_no": return_receipt.name, "is_cancelled": 0},
 			fields=["account", "debit", "credit"],
 		)
-		srbnb_account = frappe.get_cached_value("Company", company, "stock_received_but_not_billed")
+		srbnb_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 		debits = {d.account: d.debit for d in gl_entries if d.debit}
 
 		self.assertEqual(return_receipt.items[0].item_tax_amount, 0)
@@ -10068,7 +10062,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		return_receipt.remove(return_receipt.items[0])
 		return_receipt.submit()
 
-		srbnb_account = frappe.get_cached_value("Company", company, "stock_received_but_not_billed")
+		srbnb_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 		debits = frappe.get_all(
 			"GL Entry",
 			filters={"voucher_no": return_receipt.name, "is_cancelled": 0, "debit": [">", 0]},
@@ -10120,7 +10114,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 		receipt_return.insert()
 		frappe.get_doc("Purchase Receipt", receipt_return.name).submit()
 
-		srbnb_account = frappe.get_cached_value("Company", company, "stock_received_but_not_billed")
+		srbnb_account = get_default_account(company, STOCK_RECEIVED_BUT_NOT_BILLED)
 		srbnb_debit = frappe.db.get_value(
 			"GL Entry",
 			{"voucher_no": receipt_return.name, "account": srbnb_account, "is_cancelled": 0},
@@ -10402,7 +10396,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			{"voucher_no": pr.name, "is_cancelled": 0},
 			["account", "debit", "credit", "debit_in_account_currency", "credit_in_account_currency"],
 		)
-		gain_loss_account = frappe.get_cached_value("Company", pr.company, "exchange_gain_loss_account")
+		gain_loss_account = get_default_account(pr.company, EXCHANGE_GAIN_LOSS)
 		self.assertEqual({entry.account: entry.debit for entry in gl_entries}.get(gain_loss_account), 70.04)
 
 		for entry in gl_entries:
@@ -10516,7 +10510,7 @@ class TestPurchaseReceipt(ERPNextTestSuite):
 			pr_return.items[0].update(return_row)
 		pr_return.submit()
 
-		gain_loss_account = frappe.get_cached_value("Company", pr.company, "exchange_gain_loss_account")
+		gain_loss_account = get_default_account(pr.company, EXCHANGE_GAIN_LOSS)
 		reversed_amount = frappe.db.get_value(
 			"GL Entry",
 			{"voucher_no": pr_return.name, "account": gain_loss_account, "is_cancelled": 0},
