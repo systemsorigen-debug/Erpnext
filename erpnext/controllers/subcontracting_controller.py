@@ -1627,38 +1627,103 @@ class SubcontractingController(StockController):
 			for item in self.get("items"):
 				item.rm_supp_cost = 0.0
 
-	def __update_consumed_qty_in_subcontract_order(self, itemwise_consumed_qty):
+	def __update_consumed_qty_in_subcontract_order(self, itemwise_consumed_qty, consumed_bundles):
 		fields = ["main_item_code", "parent", "name"]
 		filters = {"docstatus": 1, "parent": ("in", self.subcontract_orders)}
 		rows = frappe.get_all(
 			self.subcontract_data.order_supplied_items_field, fields=fields, filters=filters, order_by="idx"
 		)
+		finished_good_of_rows = {row.name: (row.main_item_code, row.parent) for row in rows}
 		items_sent = self.get_items_sent_on_order_rows()
-		consumed_beyond_sent = get_consumed_qty_beyond_sent(rows, items_sent, itemwise_consumed_qty)
+		# a return of components books an item's return on one of its rows, so a row can net below 0
+		qty_left = {
+			(row.name, item_code): max(sent_qty, 0)
+			for row in rows
+			for item_code, sent_qty in items_sent.get(row.name, {}).items()
+		}
+		consumed_qty = defaultdict(float)
+
+		# a row consumes the items sent on it (its raw material or an alternative) for its own finished good
+		for row_name, item_code in qty_left:
+			key = (item_code, *finished_good_of_rows[row_name])
+			take_consumed_qty(qty_left, consumed_qty, (row_name, item_code), itemwise_consumed_qty, key)
+
+		self.take_serial_batches_consumed_for_unsent_finished_goods(
+			finished_good_of_rows, qty_left, consumed_qty, itemwise_consumed_qty, consumed_bundles
+		)
+
+		# what finished goods consumed beyond their own rows takes what is left, in row order
+		consumed_beyond_sent = defaultdict(float)
+		for (item_code, _finished_good, order), qty in itemwise_consumed_qty.items():
+			consumed_beyond_sent[(item_code, order)] += max(qty, 0)
+
+		for row_name, item_code in qty_left:
+			key = (item_code, finished_good_of_rows[row_name][1])
+			take_consumed_qty(qty_left, consumed_qty, (row_name, item_code), consumed_beyond_sent, key)
+
 		precision = frappe.get_precision(self.subcontract_data.order_supplied_items_field, "consumed_qty")
-
 		for row in rows:
-			# a row consumes the items sent on it: its raw material or an alternative
-			consumed_qty = 0
-			for item_code, sent_qty in items_sent.get(row.name, {}).items():
-				# a return of components books an item's return on one of its rows, so a row can net below 0
-				qty_left = max(sent_qty, 0)
-				# its own finished good's consumption first, then what others consumed beyond their rows
-				for consumption, key in (
-					(itemwise_consumed_qty, (item_code, row.main_item_code, row.parent)),
-					(consumed_beyond_sent, (item_code, row.parent)),
-				):
-					qty = min(consumption.get(key, 0), qty_left)
-					consumption[key] -= qty
-					qty_left -= qty
-					consumed_qty += qty
-
 			frappe.db.set_value(
 				self.subcontract_data.order_supplied_items_field,
 				row.name,
 				"consumed_qty",
-				flt(consumed_qty, precision),
+				flt(consumed_qty[row.name], precision),
 			)
+
+	def take_serial_batches_consumed_for_unsent_finished_goods(
+		self, finished_good_of_rows, qty_left, consumed_qty, itemwise_consumed_qty, consumed_bundles
+	):
+		"""Count the serial nos and batches a finished good with nothing sent for it consumed on the rows that sent them."""
+		sent_for = {(item_code, *finished_good_of_rows[row_name]) for row_name, item_code in qty_left}
+		bundles = {bundle: key for bundle, key in consumed_bundles.items() if key not in sent_for}
+		if not bundles:
+			return
+
+		sent = self.get_serial_batches_sent_on_order_rows()
+		for (key, serial_no, batch_no), qty in get_consumed_serial_batches(bundles).items():
+			item_code, _finished_good, order = key
+			sent_on_rows = sent.get((item_code, order, serial_no, batch_no), {})
+			for row_name in finished_good_of_rows:
+				if qty > 0 and sent_on_rows.get(row_name, 0) > 0:
+					limit = min(qty, sent_on_rows[row_name])
+					taken = take_consumed_qty(
+						qty_left, consumed_qty, (row_name, item_code), itemwise_consumed_qty, key, limit
+					)
+					sent_on_rows[row_name] -= taken
+					qty -= taken
+
+	def get_serial_batches_sent_on_order_rows(self):
+		"""Net qty of each serial no and batch sent to the subcontractor, by the order's supplied row it was sent on."""
+		se = frappe.qb.DocType("Stock Entry")
+		se_detail = frappe.qb.DocType("Stock Entry Detail")
+		bundle = frappe.qb.DocType("Serial and Batch Bundle")
+		entry = frappe.qb.DocType("Serial and Batch Entry")
+		order = se[self.subcontract_data.order_field]
+		rm_detail = se_detail[self.subcontract_data.rm_detail_field]
+		rows = (
+			frappe.qb.from_(se)
+			.inner_join(se_detail)
+			.on(se.name == se_detail.parent)
+			.inner_join(bundle)
+			.on(bundle.voucher_detail_no == se_detail.name)
+			.inner_join(entry)
+			.on(entry.parent == bundle.name)
+			.select(se_detail.item_code, order, entry.serial_no, entry.batch_no, rm_detail, Sum(entry.qty))
+			.where(
+				(se.docstatus == 1)
+				& order.isin(self.subcontract_orders)
+				& (Coalesce(rm_detail, "") != "")
+				& (bundle.warehouse == self.supplier_warehouse)
+				& (bundle.is_cancelled == 0)
+			)
+			.groupby(se_detail.item_code, order, entry.serial_no, entry.batch_no, rm_detail)
+		).run()
+
+		serial_batches = defaultdict(dict)
+		for item_code, order_name, serial_no, batch_no, order_row, qty in rows:
+			serial_batches[(item_code, order_name, serial_no, batch_no)][order_row] = qty
+
+		return serial_batches
 
 	def get_items_sent_on_order_rows(self):
 		"""Net qty of each item sent to the subcontractor, by the order's supplied row it was sent on."""
@@ -1695,11 +1760,14 @@ class SubcontractingController(StockController):
 				"Subcontracting Receipt", return_consumed_items=True
 			)
 
+			consumed_bundles = {}
 			for row in consumed_items:
 				key = (row.rm_item_code, row.main_item_code, receipt_items.get(row.reference_name))
 				itemwise_consumed_qty[key] += row.consumed_qty
+				if row.serial_and_batch_bundle:
+					consumed_bundles[row.serial_and_batch_bundle] = key
 
-			self.__update_consumed_qty_in_subcontract_order(itemwise_consumed_qty)
+			self.__update_consumed_qty_in_subcontract_order(itemwise_consumed_qty, consumed_bundles)
 
 	def update_ordered_and_reserved_qty(self):
 		sco_map = {}
@@ -1929,18 +1997,32 @@ def update_serial_nos_at_supplier(details, serial_nos, is_return):
 			details.serial_no.remove(serial_no)
 
 
-def get_consumed_qty_beyond_sent(rows, items_sent, itemwise_consumed_qty):
-	"""Consumption, by item and order, beyond what its finished good's order rows were sent."""
-	sent_for = defaultdict(float)
-	for row in rows:
-		for item_code, sent_qty in items_sent.get(row.name, {}).items():
-			sent_for[(item_code, row.main_item_code, row.parent)] += max(sent_qty, 0)
+def take_consumed_qty(qty_left, consumed_qty, row_item, consumption, key, limit=None):
+	"""Count a consumption on an order row, up to what the row has left and the limit; return the qty counted."""
+	qty = min(consumption.get(key, 0), qty_left.get(row_item, 0))
+	if limit is not None:
+		qty = min(qty, limit)
+	if qty <= 0:
+		return 0
 
-	consumed_qty = defaultdict(float)
-	for (item_code, finished_good, order), qty in itemwise_consumed_qty.items():
-		consumed_qty[(item_code, order)] += max(qty - sent_for[(item_code, finished_good, order)], 0)
+	consumption[key] -= qty
+	qty_left[row_item] -= qty
+	consumed_qty[row_item[0]] += qty
+	return qty
 
-	return consumed_qty
+
+def get_consumed_serial_batches(bundles):
+	"""Net qty of each serial no and batch the bundles consumed, by the consumption they belong to."""
+	consumed = defaultdict(float)
+	for entry in frappe.get_all(
+		"Serial and Batch Entry",
+		filters={"parent": ("in", list(bundles))},
+		fields=["parent", "serial_no", "batch_no", "qty"],
+	):
+		# a consumption's entries are negative, a return's positive
+		consumed[(bundles[entry.parent], entry.serial_no, entry.batch_no)] -= entry.qty
+
+	return consumed
 
 
 def get_item_details(items):
