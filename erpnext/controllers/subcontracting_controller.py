@@ -1699,7 +1699,14 @@ class SubcontractingController(StockController):
 			.inner_join(se_detail)
 			.on(se.name == se_detail.parent)
 			.select(se_detail.item_code, order, Sum(qty))
-			.where((se.docstatus == 1) & order.isin(self.subcontract_orders))
+			.where(
+				(se.docstatus == 1)
+				& order.isin(self.subcontract_orders)
+				& (
+					(se.purpose == "Send to Subcontractor")
+					| ((se.purpose == "Material Transfer") & (se.is_return == 1))
+				)
+			)
 			.groupby(se_detail.item_code, order)
 		).run()
 
