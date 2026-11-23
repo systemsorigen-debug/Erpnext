@@ -1660,6 +1660,8 @@ class SubcontractingController(StockController):
 				flt(consumed_qty, precision),
 			)
 
+		return consumed_beyond_sent
+
 	def get_items_sent_on_order_rows(self):
 		"""Net qty of each item sent to the subcontractor, by the order's supplied row it was sent on."""
 		se = frappe.qb.DocType("Stock Entry")
@@ -1686,7 +1688,7 @@ class SubcontractingController(StockController):
 		return items_sent
 
 	def set_consumed_qty_in_subcontract_order(self):
-		# Update consumed qty back in the subcontract order
+		"""Update consumed qty back in the subcontract order. Returns the consumption, by item and order, no order row supplies."""
 		if self.doctype in ["Subcontracting Order", "Subcontracting Receipt"]:
 			self.__get_subcontract_orders()
 			if self.doctype == "Subcontracting Order":
@@ -1702,7 +1704,7 @@ class SubcontractingController(StockController):
 				key = (row.rm_item_code, row.main_item_code, receipt_items.get(row.reference_name))
 				itemwise_consumed_qty[key] += row.consumed_qty
 
-			self.__update_consumed_qty_in_subcontract_order(itemwise_consumed_qty)
+			return self.__update_consumed_qty_in_subcontract_order(itemwise_consumed_qty)
 
 	def update_ordered_and_reserved_qty(self):
 		sco_map = {}
