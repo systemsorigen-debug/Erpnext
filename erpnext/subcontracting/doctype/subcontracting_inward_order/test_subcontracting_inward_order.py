@@ -1677,6 +1677,21 @@ class IntegrationTestSubcontractingInwardOrder(ERPNextTestSuite):
 			0,
 		)
 
+	def test_cancelled_return_keeps_its_qty_off_a_completed_work_order(self):
+		scio, wo = make_work_order_with_extra_material()
+		frappe.new_doc("Stock Entry").update(make_stock_entry_from_wo(wo.name, "Manufacture", 5)).submit()
+		scio.reload()
+		rm_return = frappe.new_doc("Stock Entry").update(scio.make_rm_return())
+		rm_return.submit()
+		rm_return.cancel()
+
+		self.assertEqual(
+			frappe.db.get_value(
+				"Work Order Item", {"parent": wo.name, "item_code": "Basic RM"}, "stock_reserved_qty"
+			),
+			0,
+		)
+
 	def test_redo_cancelled_manufacture_using_extra_customer_material(self):
 		scio, wo = make_work_order_with_extra_material()
 		manufacture = frappe.new_doc("Stock Entry").update(
