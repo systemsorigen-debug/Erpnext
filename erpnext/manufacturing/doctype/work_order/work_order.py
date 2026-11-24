@@ -4419,7 +4419,13 @@ def restore_inward_reservations(scio: str, return_qty: dict[str, float]) -> None
 	"""Give Work Orders back, up to `return_qty` per inward order row, the customer material a return released from them."""
 	precision = frappe.get_precision("Stock Reservation Entry", "reserved_qty")
 	free_qty = get_sre_reserved_qty_details_for_voucher("Subcontracting Inward Order", scio)
-	for sre in get_inward_reservations(scio, list(return_qty)):
+	sres = get_inward_reservations(scio, list(return_qty))
+	finished_work_orders = get_finished_work_orders([sre.voucher_no for sre in sres])
+	for sre in sres:
+		# a finished Work Order uses no more, so the qty stays free on the inward order
+		if sre.voucher_no in finished_work_orders:
+			continue
+
 		restore_qty = flt(
 			min(
 				sre.voucher_qty - sre.reserved_qty,
@@ -4434,6 +4440,19 @@ def restore_inward_reservations(scio: str, return_qty: dict[str, float]) -> None
 		release_inward_reservation(sre, -restore_qty)
 		free_qty[sre.from_voucher_detail_no] -= restore_qty
 		return_qty[sre.from_voucher_detail_no] -= restore_qty
+
+
+def get_finished_work_orders(work_orders: list[str]) -> set[str]:
+	if not work_orders:
+		return set()
+
+	return set(
+		frappe.get_all(
+			"Work Order",
+			filters={"name": ("in", work_orders), "status": ("in", ("Completed", "Closed"))},
+			pluck="name",
+		)
+	)
 
 
 def get_unused_inward_qty(sres: list[dict]) -> dict[str, float]:
@@ -4460,6 +4479,7 @@ def get_inward_reservations(scio: str, scio_details: list[str]) -> list[dict]:
 		.on(wo_item.name == sre.voucher_detail_no)
 		.select(
 			sre.name,
+			sre.voucher_no,
 			sre.voucher_detail_no,
 			sre.from_voucher_detail_no,
 			sre.reserved_qty,
